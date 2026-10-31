@@ -16,17 +16,6 @@ body:
       required: true
 
   - type: dropdown
-    id: environment
-    attributes:
-      label: Ambiente
-      options:
-        - dev
-        - qa
-        - prod
-    validations:
-      required: true
-
-  - type: dropdown
     id: module
     attributes:
       label: Módulo
@@ -34,13 +23,5 @@ body:
         - network
         - aks
         - storage
-    validations:
-      required: true
-
-  - type: input
-    id: region
-    attributes:
-      label: Región
-      placeholder: "Por ejemplo: eastus"
     validations:
       required: true

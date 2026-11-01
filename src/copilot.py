@@ -14,8 +14,10 @@ from module_catalogo import discover_modules
 API_KEY = os.environ.get("LLM_API_KEY", "")
 GH_PLATFORM_TOKEN = os.environ.get("GH_PLATFORM_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN", "")
-BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-MODEL = os.environ.get("LLM_MODEL", "gpt-5.4-nano")
+BASE_URL = (
+    os.environ.get("LLM_BASE_URL") or "https://api.openai.com/v1"
+).rstrip("/")
+MODEL = os.environ.get("LLM_MODEL") or "gpt-5.4-nano"
 SUPPORTED_CLOUDS = {"azure"}
 
 

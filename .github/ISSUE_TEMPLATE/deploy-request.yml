@@ -1,28 +1,42 @@
-name: Solicitud de despliegue
-description: Solicita desplegar un módulo de Terraform
-title: "[deploy] "
-labels: ["deployment-request"]
+name: Infrastructure request
+description: Request Azure infrastructure through the platform assistant
+title: "[infra] "
+labels: ["infrastructure-request"]
 
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe what you need in plain language. The assistant will ask for missing required module values.
+        This intake currently deploys Azure only. Do not include credentials, secrets, customer data, or other sensitive information.
+
   - type: dropdown
     id: cloud
     attributes:
-      label: Nube
+      label: Cloud
       options:
-        - aws
         - azure
-        - gcp
     validations:
       required: true
 
-  - type: dropdown
-    id: module
+  - type: textarea
+    id: request
     attributes:
-      label: Módulo
-      options:
-        - network
-        - aks
-        - storage
+      label: Infrastructure request
+      description: Example: Create an Azure VNet named vnet-dev-01 and subnet subnet-dev-01.
+      placeholder: I need an Azure network for ...
     validations:
       required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment (optional)
+      placeholder: dev
+
+  - type: input
+    id: location
+    attributes:
+      label: Azure location (optional)
+      placeholder: eastus
 

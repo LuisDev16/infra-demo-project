@@ -1,49 +1,55 @@
-# Terraform workflow
+# Infra Demo Project
 
-El workflow `.github/workflows/terraform.yml` valida los cambios en `push` y
-`pull_request` con `terraform fmt`, `init` y `validate`. Estos eventos no tienen
-permisos OIDC ni ejecutan `plan`, `apply` o `destroy`.
-Usa Terraform 1.9.8, necesario para las validaciones de variables cruzadas del
-módulo de red de Azure.
+Este repositorio consume módulos Terraform compartidos. La automatización de
+solicitudes y despliegues está habilitada inicialmente para Azure, porque
+`environments/azure` es el único entorno con provider, backend remoto y
+autenticación OIDC configurados.
 
-Este workflow está configurado por ahora solo para Azure. Para ejecutarlo, ve a
-**Actions → Terraform → Run workflow** y selecciona una operación:
+## Flujo de solicitud
 
-- `plan`: crea un plan y publica un resumen de acciones sin imprimir valores.
-- `apply`: crea el plan, espera la aprobación del Environment protegido y aplica
-  exactamente ese archivo de plan.
-- `destroy`: genera un plan de destrucción explícito, espera una aprobación
-  separada y aplica ese mismo plan. Un `push` o `pull_request` nunca destruye.
+1. Asegúrate de que exista la etiqueta `infrastructure-request` y abre un issue
+   usando **Infrastructure request**.
+2. El asistente inspecciona el catálogo del repositorio
+   `LuisDev16/modulos-terraform` y pregunta en el issue por las variables
+   obligatorias que falten.
+3. Al completar la información, crea o actualiza la rama
+   `copilot/issue-<número>` y abre un PR a `main`. Para el módulo Azure `network`,
+   el bloque se agrega en `environments/azure/main.tf`; ese módulo crea el grupo
+   de recursos, VNet, subnet y NSG (y la VM solo si se habilita explícitamente).
+4. El PR ejecuta `terraform fmt`, `init` sin backend y `validate`. Configura una
+   regla de protección de `main` que exija aprobación antes de fusionar.
+5. Después de fusionar el PR aprobado, el workflow genera un plan con el backend
+   remoto. El job de apply espera la aprobación del GitHub Environment
+   `terraform-apply` y aplica exactamente ese plan.
+
+El workflow de intake no ejecuta `terraform apply`. La aprobación del PR y la
+aprobación del Environment son controles distintos: el PR debe aprobarse y
+fusionarse primero; luego un revisor debe aprobar el despliegue. Configura
+**Required reviewers** en `terraform-apply`.
 
 ## Configuración requerida en GitHub
 
-1. Configura OIDC en Microsoft Entra y asigna a la identidad permisos mínimos en
-   Azure. Añade `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` y
-   `AZURE_SUBSCRIPTION_ID` como **Actions variables** o **Actions secrets** del
-   repositorio.
-2. Crea el **Actions secret** `TF_PLAN_ENCRYPTION_KEY` con una clave aleatoria
-   fuerte. Los planes de Terraform pueden contener valores sensibles; el artefacto
-   de plan se cifra y se conserva solo por un día.
-3. Crea los GitHub Environments `terraform-apply` y `terraform-destroy` y configura
-   **Required reviewers** en ambos (idealmente aprobadores distintos para
-   destrucción). El segundo Environment protege específicamente `destroy`.
-4. Configura las credenciales federadas de la aplicación de Entra para confiar
-   solo en este repositorio y en las referencias/Environments del workflow; no
-   uses credenciales cloud permanentes en el repositorio.
-5. Configura un **backend remoto con bloqueo de estado** en
-   `environments/azure` antes de ejecutar operaciones manuales. El workflow
-   rechaza el backend local: es necesario para mantener el estado y evitar
-   despliegues concurrentes. El backend debe permitir OIDC al inicializarlo.
+Configura estos Actions secrets/variables:
 
-El resumen de ejecución muestra las acciones y direcciones de recursos, pero no
-los valores marcados como sensibles por Terraform. El archivo cifrado conserva el
-plan exacto que consume `apply`; no se genera un plan nuevo después de la
-aprobación. Marca como `sensitive` todas las variables y salidas que contengan
-secretos. Mantén el repositorio y el acceso a Actions restringidos a colaboradores
-autorizados.
+- `LLM_API_KEY` (secret), y opcionalmente `LLM_BASE_URL` / `LLM_MODEL` (variables).
+- `GH_PLATFORM_TOKEN` (secret): token limitado a este repositorio con permisos
+  de escritura de Contents y Pull requests. Se usa para publicar la rama/PR; un
+  push hecho con `GITHUB_TOKEN` no iniciaría los checks de PR.
+- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID` como variables
+  o secrets, con federación OIDC configurada para este repositorio.
+- `TF_PLAN_ENCRYPTION_KEY` (secret): clave aleatoria fuerte para cifrar el plan
+  temporal de Terraform.
 
-Fija las referencias de módulos remotos a tags o commits inmutables para que el
-código revisado no cambie entre el plan y el apply.
+Configura además el backend Azure Blob de `environments/azure` con bloqueo de
+estado y autenticación OIDC. El workflow rechaza el backend local. Protege la
+rama `main` para requerir PR aprobado y configura el GitHub Environment
+`terraform-apply` con Required reviewers.
+La identidad federada de Azure debe confiar en el workflow desde `refs/heads/main`
+y desde el Environment protegido `terraform-apply`.
 
-No guardes secretos en archivos `*.tfvars`; el archivo `terraform.tfvars` de Azure
-actual contiene parámetros de ejemplo y permanece versionado en este momento.
+No compartas secretos, claves privadas ni datos sensibles en los issues. La
+automatización de issues solo soporta Azure por ahora; AWS y GCP requieren
+configurar sus providers, credenciales OIDC y backends antes de habilitar esos
+entornos. No guardes secretos en `terraform.tfvars`; el archivo existente de Azure
+está versionado y debe contener solo valores no sensibles. Marca como `sensitive`
+las variables y salidas Terraform que puedan contener información confidencial.

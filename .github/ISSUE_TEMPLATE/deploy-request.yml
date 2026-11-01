@@ -26,12 +26,3 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: component
-    attributes:
-      label: Componente de red
-      options:
-          - virtual-network
-          - subnet
-    validations:
-      required: true

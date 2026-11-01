@@ -1,0 +1,272 @@
+name: Terraform
+
+on:
+  pull_request:
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+      - "**/*.tfvars.example"
+      - "**/.terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.tf"
+      - "**/*.tfvars"
+      - "**/*.tfvars.example"
+      - "**/.terraform.lock.hcl"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Operación de Terraform
+        required: true
+        default: plan
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-azure-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Format, init and validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize and validate configurations
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "::error::Azure plan/apply/destroy must be dispatched from main."
+              exit 1
+            fi
+          fi
+
+          directory="environments/azure"
+          if ! find "$directory" -maxdepth 1 -type f -name '*.tf' -size +0c -print -quit | grep -q .; then
+            echo "::error::$directory has no Terraform configuration."
+            exit 1
+          fi
+
+          terraform -chdir="$directory" init -backend=false -input=false
+          terraform -chdir="$directory" validate -no-color
+
+  plan:
+    name: Create and preserve plan
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      CLOUD: azure
+      OPERATION: ${{ inputs.operation }}
+      TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure Azure OIDC environment
+        shell: bash
+        env:
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          {
+            echo "ARM_USE_OIDC=true"
+            echo "ARM_CLIENT_ID=$CLIENT_ID"
+            echo "ARM_TENANT_ID=$TENANT_ID"
+            echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Initialize remote backend and create plan
+        id: create-plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="environments/$CLOUD"
+          plan_file="$RUNNER_TEMP/tfplan"
+          plan_output_file="$RUNNER_TEMP/terraform-plan-output.txt"
+
+          terraform -chdir="$directory" init -input=false
+
+          backend_file="$directory/.terraform/terraform.tfstate"
+          backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          if [[ "$backend_type" == "local" ]]; then
+            echo "::error::A remote, locking Terraform backend is required for plan/apply/destroy. Configure it for $CLOUD and retry."
+            exit 1
+          fi
+
+          var_file=()
+          if [[ -f "$directory/terraform.tfvars" ]]; then
+            var_file=(-var-file=terraform.tfvars)
+          fi
+
+          if [[ "$OPERATION" == "destroy" ]]; then
+            terraform -chdir="$directory" plan -destroy -input=false -lock-timeout=5m -out="$plan_file" "${var_file[@]}" > "$plan_output_file"
+          else
+            terraform -chdir="$directory" plan -input=false -lock-timeout=5m -out="$plan_file" "${var_file[@]}" > "$plan_output_file"
+          fi
+
+          {
+            echo "## Terraform plan review"
+            echo "- Provider: $CLOUD"
+            echo "- Operation: $OPERATION"
+            echo "- Commit: $GITHUB_SHA"
+            echo ""
+            echo "Sensitive values are omitted. The exact saved plan is encrypted in the short-lived workflow artifact."
+            echo ""
+            echo "| Action | Resource address |"
+            echo "| --- | --- |"
+            terraform -chdir="$directory" show -json "$plan_file" | jq -r '
+              [.resource_changes[]? | select(.mode == "managed") |
+                "| \(.change.actions | join(",")) | `\(.address)` |"] |
+              if length == 0 then "| no-op | No managed-resource changes |" else .[] end
+            '
+            echo ""
+            echo "### Redacted Terraform diff"
+            echo '```terraform'
+            terraform -chdir="$directory" show -no-color "$plan_file"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -z "$TF_PLAN_ENCRYPTION_KEY" ]]; then
+            echo "::error::Add the TF_PLAN_ENCRYPTION_KEY Actions secret before creating a plan."
+            exit 1
+          fi
+          printf '%s' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/tfplan.gpg" "$plan_file"
+          rm -f "$plan_file"
+          rm -f "$plan_output_file"
+
+      - name: Upload encrypted plan for review/apply
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}-azure-${{ inputs.operation }}
+          path: ${{ runner.temp }}/tfplan.gpg
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    name: Apply approved plan
+    if: needs.plan.result == 'success' && (inputs.operation == 'apply' || inputs.operation == 'destroy')
+    needs: plan
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.operation == 'destroy' && 'terraform-destroy' || 'terraform-apply' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      CLOUD: azure
+      TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+    steps:
+      - name: Checkout the planned commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure Azure OIDC environment
+        shell: bash
+        env:
+          CLIENT_ID: ${{ vars.AZURE_CLIENT_ID || secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ vars.AZURE_TENANT_ID || secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID || secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          {
+            echo "ARM_USE_OIDC=true"
+            echo "ARM_CLIENT_ID=$CLIENT_ID"
+            echo "ARM_TENANT_ID=$TENANT_ID"
+            echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
+          } >> "$GITHUB_ENV"
+
+      - name: Download and decrypt the exact planned file
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}-azure-${{ inputs.operation }}
+          path: ${{ runner.temp }}/encrypted-plan
+
+      - name: Initialize backend and apply saved plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="environments/$CLOUD"
+          plan_file="$RUNNER_TEMP/tfplan"
+          encrypted_plan="$RUNNER_TEMP/encrypted-plan/tfplan.gpg"
+
+          if [[ -z "$TF_PLAN_ENCRYPTION_KEY" ]]; then
+            echo "::error::TF_PLAN_ENCRYPTION_KEY is not available to the protected environment."
+            exit 1
+          fi
+
+          terraform -chdir="$directory" init -input=false
+          backend_file="$directory/.terraform/terraform.tfstate"
+          backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          if [[ "$backend_type" == "local" ]]; then
+            echo "::error::A remote, locking Terraform backend is required."
+            exit 1
+          fi
+
+          printf '%s' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output "$plan_file" "$encrypted_plan"
+          terraform -chdir="$directory" apply -input=false -lock-timeout=5m "$plan_file" > "$RUNNER_TEMP/terraform-apply-output.txt"
+          rm -f "$plan_file"
+          rm -f "$RUNNER_TEMP/terraform-apply-output.txt"
+          echo "Terraform operation completed successfully for $CLOUD." >> "$GITHUB_STEP_SUMMARY"

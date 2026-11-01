@@ -135,9 +135,12 @@ jobs:
           terraform -chdir="$directory" init -input=false
 
           backend_file="$directory/.terraform/terraform.tfstate"
-          backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          backend_type="local"
+          if [[ -f "$backend_file" ]]; then
+            backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          fi
           if [[ "$backend_type" == "local" ]]; then
-            echo "::error::A remote, locking Terraform backend is required for plan/apply/destroy. Configure it for $CLOUD and retry."
+            echo "::error::No remote Terraform backend is configured for $CLOUD. Configure an Azure Blob Storage backend with state locking, then retry."
             exit 1
           fi
 
@@ -259,9 +262,12 @@ jobs:
 
           terraform -chdir="$directory" init -input=false
           backend_file="$directory/.terraform/terraform.tfstate"
-          backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          backend_type="local"
+          if [[ -f "$backend_file" ]]; then
+            backend_type="$(jq -r '.backend.type // "local"' "$backend_file")"
+          fi
           if [[ "$backend_type" == "local" ]]; then
-            echo "::error::A remote, locking Terraform backend is required."
+            echo "::error::No remote Terraform backend is configured for Azure. Configure an Azure Blob Storage backend with state locking, then retry."
             exit 1
           fi
 

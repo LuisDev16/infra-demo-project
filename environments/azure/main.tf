@@ -7,3 +7,14 @@ module "network" {
   subnet_name             = var.subnet_name
   subnet_address_prefixes = var.subnet_address_prefixes
 }
+
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate-lab"
+    storage_account_name = "saluisdev01"
+    container_name       = "tfstate"
+    key                  = "infra-demo-project.tfstate"
+    use_azuread_auth     = true
+    use_oidc             = true
+  }
+}

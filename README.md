@@ -22,14 +22,15 @@ autenticación OIDC configurados.
    remoto. El job de apply espera la aprobación del GitHub Environment
    `terraform-apply` y aplica exactamente ese plan.
 
-También se puede iniciar manualmente el workflow desde `main` para reintentar una
-ejecución fallida; sigue generando un plan nuevo y requiere la aprobación de
-`terraform-apply` antes de aplicar. Indica `issue_number` para que el reintento
-pueda cerrar el issue asociado.
+Desde **Actions → Infrastructure Copilot and Terraform → Run workflow**, en la
+rama `main`, puedes reintentar un `apply`; indica `issue_number` para cerrar el
+issue asociado. El plan se genera de nuevo y el apply requiere la aprobación de
+`terraform-apply`.
 
-Al terminar el intento, un job finalizador cierra el issue y comenta el resultado
-(incluidos los estados de validate/plan/apply y el enlace a Actions), incluso si
-algún job falla. No se hace rollback automático del commit ni de la infraestructura.
+Al terminar un despliegue automático o un reintento manual `apply`, un job
+finalizador cierra el issue asociado y comenta el resultado (estados de
+validate/plan/apply y enlace a Actions), incluso si algún job falla. No se hace
+rollback automático del commit ni de la infraestructura.
 
 El workflow de intake no ejecuta `terraform apply`. La aprobación del PR y la
 aprobación del Environment son controles distintos: el PR debe aprobarse y
@@ -52,9 +53,9 @@ Configura estos Actions secrets/variables:
 Configura además el backend Azure Blob de `environments/azure` con bloqueo de
 estado y autenticación OIDC. El workflow rechaza el backend local. Protege la
 rama `main` para requerir PR aprobado y configura el GitHub Environment
-`terraform-apply` con Required reviewers.
-La identidad federada de Azure debe confiar en el workflow desde `refs/heads/main`
-y desde el Environment protegido `terraform-apply`.
+`terraform-apply` con Required reviewers. La identidad federada de Azure debe
+confiar en el workflow desde `refs/heads/main` y desde el Environment protegido
+`terraform-apply`.
 
 No compartas secretos, claves privadas ni datos sensibles en los issues. La
 automatización de issues solo soporta Azure por ahora; AWS y GCP requieren

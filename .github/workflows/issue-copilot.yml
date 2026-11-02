@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Número del issue asociado al reintento (opcional)
+        description: Issue asociado a un reintento apply (opcional)
         required: false
         type: string
 

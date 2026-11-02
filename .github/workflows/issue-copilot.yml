@@ -14,6 +14,7 @@ on:
     branches: [main]
     paths:
       - "environments/azure/**"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -67,7 +68,7 @@ jobs:
 
   validate:
     name: Terraform format and validate
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +90,9 @@ jobs:
 
   plan:
     name: Plan Azure deployment
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -193,7 +196,9 @@ jobs:
 
   apply:
     name: Apply reviewed Azure plan
-    if: needs.plan.result == 'success' && github.event_name == 'push'
+    if: |
+      needs.plan.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: plan
     runs-on: ubuntu-latest
     environment:
@@ -235,6 +240,12 @@ jobs:
             echo "ARM_TENANT_ID=$TENANT_ID"
             echo "ARM_SUBSCRIPTION_ID=$SUBSCRIPTION_ID"
           } >> "$GITHUB_ENV"
+
+      - name: Download encrypted Terraform plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}-azure-apply
+          path: ${{ runner.temp }}/encrypted-plan
 
       - name: Download and apply the exact reviewed plan
         shell: bash

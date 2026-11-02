@@ -22,6 +22,10 @@ autenticación OIDC configurados.
    remoto. El job de apply espera la aprobación del GitHub Environment
    `terraform-apply` y aplica exactamente ese plan.
 
+También se puede iniciar manualmente el workflow desde `main` para reintentar una
+ejecución fallida; sigue generando un plan nuevo y requiere la aprobación de
+`terraform-apply` antes de aplicar.
+
 El workflow de intake no ejecuta `terraform apply`. La aprobación del PR y la
 aprobación del Environment son controles distintos: el PR debe aprobarse y
 fusionarse primero; luego un revisor debe aprobar el despliegue. Configura

@@ -24,7 +24,12 @@ autenticación OIDC configurados.
 
 También se puede iniciar manualmente el workflow desde `main` para reintentar una
 ejecución fallida; sigue generando un plan nuevo y requiere la aprobación de
-`terraform-apply` antes de aplicar.
+`terraform-apply` antes de aplicar. Indica `issue_number` para que el reintento
+pueda cerrar el issue asociado.
+
+Al terminar el intento, un job finalizador cierra el issue y comenta el resultado
+(incluidos los estados de validate/plan/apply y el enlace a Actions), incluso si
+algún job falla. No se hace rollback automático del commit ni de la infraestructura.
 
 El workflow de intake no ejecuta `terraform apply`. La aprobación del PR y la
 aprobación del Environment son controles distintos: el PR debe aprobarse y

@@ -14,7 +14,12 @@ on:
     branches: [main]
     paths:
       - "environments/azure/**"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Número del issue asociado al reintento (opcional)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +32,7 @@ jobs:
   copilot:
     if: |
       (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'infrastructure-request')) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request == null && github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'infrastructure-request'))
+      (github.event_name == 'issue_comment' && github.event.issue.state == 'open' && github.event.issue.pull_request == null && github.event.comment.user.type != 'Bot' && contains(github.event.issue.labels.*.name, 'infrastructure-request'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -277,3 +282,67 @@ jobs:
 
       - name: Report completion
         run: echo "Terraform operation completed successfully for Azure." >> "$GITHUB_STEP_SUMMARY"
+
+  close_request_issue:
+    name: Close issue after deployment attempt
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [validate, plan, apply]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Resolve issue and close it with the workflow result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER_INPUT: ${{ inputs.issue_number }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          APPLY_RESULT: ${{ needs.apply.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          issue_number="$ISSUE_NUMBER_INPUT"
+          if [[ -n "$issue_number" && ! "$issue_number" =~ ^[0-9]+$ ]]; then
+            echo "::error::issue_number must contain only digits."
+            exit 1
+          fi
+
+          if [[ -z "$issue_number" && "$EVENT_NAME" == "push" ]]; then
+            head_ref="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null and (.head.ref | test("^copilot/issue-[0-9]+$")))] | last | .head.ref // empty')"
+            if [[ "$head_ref" =~ ^copilot/issue-([0-9]+)$ ]]; then
+              issue_number="${BASH_REMATCH[1]}"
+            fi
+          fi
+
+          if [[ -z "$issue_number" ]]; then
+            echo "::warning::No issue number was supplied or found for this deployment."
+            exit 0
+          fi
+
+          result="success"
+          if [[ "$VALIDATE_RESULT" != "success" || "$PLAN_RESULT" != "success" || "$APPLY_RESULT" != "success" ]]; then
+            result="failure"
+          fi
+
+          body="## Resultado del despliegue: $result
+
+          - Terraform validate: $VALIDATE_RESULT
+          - Terraform plan: $PLAN_RESULT
+          - Terraform apply: $APPLY_RESULT
+
+          Ejecución: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          El intento terminó y el issue se cierra automáticamente. No se ejecuta un rollback automático; si hubo un fallo, revisa la ejecución y el estado de Terraform antes de reintentar o revertir cambios."
+
+          gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$body"

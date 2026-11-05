@@ -1,65 +1,59 @@
 # Infra Demo Project
 
-Este repositorio consume módulos Terraform compartidos. La automatización de
-solicitudes y despliegues está habilitada inicialmente para Azure, porque
-`environments/azure` es el único entorno con provider, backend remoto y
-autenticación OIDC configurados.
+Este repositorio consume módulos Terraform compartidos de
+`LuisDev16/modulos-terraform`. El intake de issues soporta AWS y Azure; GCP aún no
+está habilitado.
 
 ## Flujo de solicitud
 
 1. Asegúrate de que exista la etiqueta `infrastructure-request` y abre un issue
-   usando **Infrastructure request**.
-2. El asistente inspecciona el catálogo del repositorio
-   `LuisDev16/modulos-terraform` y pregunta en el issue por las variables
+   usando **Infrastructure request**. Selecciona AWS o Azure y describe lo que
+   necesitas en lenguaje normal.
+2. El asistente consulta el catálogo real de módulos y pregunta por las entradas
    obligatorias que falten.
-3. Al completar la información, crea o actualiza la rama
-   `copilot/issue-<número>` y abre un PR a `main`. Para el módulo Azure `network`,
-   el bloque se agrega en `environments/azure/main.tf`; ese módulo crea el grupo
-   de recursos, VNet, subnet y NSG (y la VM solo si se habilita explícitamente).
-4. El PR ejecuta `terraform fmt`, `init` sin backend y `validate`. Configura una
-   regla de protección de `main` que exija aprobación antes de fusionar.
-5. Después de fusionar el PR aprobado, el workflow genera un plan con el backend
-   remoto. El job de apply espera la aprobación del GitHub Environment
-   `terraform-apply` y aplica exactamente ese plan.
+3. Con los datos completos, crea o actualiza la rama `copilot/issue-<número>` y
+   abre un PR a `main`. La instancia generada se agrega a
+   `environments/<cloud>/main.tf`; los módulos base existentes se conservan.
+4. El workflow correspondiente valida el PR. Protege `main` para exigir aprobación
+   antes de fusionarlo.
+5. Al fusionarlo, Azure usa su backend Blob y AWS el workspace HCP
+   `luisdcm/infra-demo-project-aws`. AWS genera un plan remoto guardado; el job de
+   apply espera la aprobación del Environment GitHub `terraform-apply` y aplica ese
+   mismo plan. No se necesita otra confirmación en la UI de HCP.
 
-Desde **Actions → Infrastructure Copilot and Terraform → Run workflow**, en la
-rama `main`, puedes reintentar un `apply`; indica `issue_number` para cerrar el
-issue asociado. El plan se genera de nuevo y el apply requiere la aprobación de
-`terraform-apply`.
+El módulo `aws/network` solo crea una VPC y una subnet. La región de AWS es fija
+por workspace (`us-east-1` actualmente). Solicitudes de S3, EC2/VM u otros
+servicios requieren módulos que los implementen; el bot no debe crear un PR para
+un recurso que no encuentre en el catálogo.
 
-Al terminar un despliegue automático o un reintento manual `apply`, un job
-finalizador cierra el issue asociado y comenta el resultado (estados de
-validate/plan/apply y enlace a Actions), incluso si algún job falla. No se hace
-rollback automático del commit ni de la infraestructura.
+Al terminar un despliegue automático o un reintento manual, el workflow cierra el
+issue asociado y comenta el resultado y el enlace a Actions, incluso si algún job
+falla. No se hace rollback automático del código ni de la infraestructura.
 
-El workflow de intake no ejecuta `terraform apply`. La aprobación del PR y la
-aprobación del Environment son controles distintos: el PR debe aprobarse y
-fusionarse primero; luego un revisor debe aprobar el despliegue. Configura
-**Required reviewers** en `terraform-apply`.
+## Configuración requerida en GitHub y HCP
 
-## Configuración requerida en GitHub
+Actions secrets/variables:
 
-Configura estos Actions secrets/variables:
+- `LLM_API_KEY` (secret); opcionalmente `LLM_BASE_URL` y `LLM_MODEL` (variables).
+- `GH_PLATFORM_TOKEN` (secret): permisos Contents y Pull requests write para crear
+  ramas y PRs en este repositorio.
+- `HCP_TERRAFORM_TOKEN` (secret a nivel de repositorio): token con permisos de
+  plan/apply para el workspace HCP AWS. El workflow lo entrega a Terraform CLI como
+  `TF_TOKEN_app_terraform_io`.
+- `AWS_REGION` (Actions variable): debe coincidir con `aws_region` en el workspace
+  HCP; actualmente `us-east-1`.
+- `TF_PLAN_ENCRYPTION_KEY` (secret): clave fuerte para cifrar los planes guardados.
+- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID` para Azure OIDC.
 
-- `LLM_API_KEY` (secret), y opcionalmente `LLM_BASE_URL` / `LLM_MODEL` (variables).
-- `GH_PLATFORM_TOKEN` (secret): token limitado a este repositorio con permisos
-  de escritura de Contents y Pull requests. Se usa para publicar la rama/PR; un
-  push hecho con `GITHUB_TOKEN` no iniciaría los checks de PR.
-- `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID` como variables
-  o secrets, con federación OIDC configurada para este repositorio.
-- `TF_PLAN_ENCRYPTION_KEY` (secret): clave aleatoria fuerte para cifrar el plan
-  temporal de Terraform.
+En HCP configura las credenciales dinámicas AWS y los permisos IAM de VPC/subnet.
+Mantén las variables base `aws_region` y `name` en el workspace; las instancias
+creadas por issues reciben sus argumentos en sus propios bloques de módulo. El
+provider raíz usa la región del workspace.
 
-Configura además el backend Azure Blob de `environments/azure` con bloqueo de
-estado y autenticación OIDC. El workflow rechaza el backend local. Protege la
-rama `main` para requerir PR aprobado y configura el GitHub Environment
-`terraform-apply` con Required reviewers. La identidad federada de Azure debe
-confiar en el workflow desde `refs/heads/main` y desde el Environment protegido
-`terraform-apply`.
+Configura el backend Azure Blob con bloqueo de estado y autenticación OIDC.
+Protege `main` con aprobación de PR y configura `terraform-apply` con Required
+reviewers para aprobar los applies de ambos proveedores.
 
-No compartas secretos, claves privadas ni datos sensibles en los issues. La
-automatización de issues solo soporta Azure por ahora; AWS y GCP requieren
-configurar sus providers, credenciales OIDC y backends antes de habilitar esos
-entornos. No guardes secretos en `terraform.tfvars`; el archivo existente de Azure
-está versionado y debe contener solo valores no sensibles. Marca como `sensitive`
-las variables y salidas Terraform que puedan contener información confidencial.
+`terraform.tfvars` está ignorado por Git; no guardes credenciales en ese archivo.
+El módulo AWS actual no implementa S3, EC2/VM ni almacenamiento. Añade y publica
+esos módulos en `modulos-terraform` antes de habilitar solicitudes para ellos.

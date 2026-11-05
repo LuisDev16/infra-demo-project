@@ -1,5 +1,5 @@
 name: Infrastructure request
-description: Request Azure infrastructure through the platform assistant
+description: Request AWS or Azure network infrastructure through the platform assistant
 title: "[infra] "
 labels: ["infrastructure-request"]
 
@@ -8,13 +8,15 @@ body:
     attributes:
       value: |
         Describe what you need in plain language. The assistant will ask for missing required module values.
-        This intake currently deploys Azure only. Do not include credentials, secrets, customer data, or other sensitive information.
+        AWS requests currently use the region configured on the HCP workspace and the AWS network module creates a VPC and subnet only.
+        Do not include credentials, secrets, customer data, or other sensitive information.
 
   - type: dropdown
     id: cloud
     attributes:
       label: Cloud
       options:
+        - aws
         - azure
     validations:
       required: true
@@ -23,8 +25,8 @@ body:
     id: request
     attributes:
       label: Infrastructure request
-      description: Example: Create an Azure VNet named vnet-dev-01 and subnet subnet-dev-01.
-      placeholder: I need an Azure network for ...
+      description: Example: Create an AWS VPC named vpc-dev-01 with CIDR 10.20.0.0/16 and a subnet using 10.20.1.0/24.
+      placeholder: I need an AWS or Azure network for ...
     validations:
       required: true
 
@@ -37,6 +39,7 @@ body:
   - type: input
     id: location
     attributes:
-      label: Azure location (optional)
-      placeholder: eastus
+      label: Azure location or AWS region (optional)
+      description: AWS must match the region configured in the HCP workspace.
+      placeholder: eastus or us-east-1
 

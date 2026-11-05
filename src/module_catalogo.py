@@ -9,7 +9,7 @@ import urllib.request
 
 
 MODULE_REPO = os.environ.get("MODULE_REPO", "LuisDev16/modulos-terraform")
-SUPPORTED_CLOUDS = {"azure"}
+SUPPORTED_CLOUDS = {"azure", "aws"}
 
 
 def api(path):

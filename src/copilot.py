@@ -422,6 +422,13 @@ def main():
         form_cloud = re.findall(r"(?im)^###\s*Cloud\s*\n+\s*(aws|azure)\s*$", issue_text)
         if form_cloud:
             data["cloud"] = form_cloud[-1].lower()
+        else:
+            explicit_cloud = re.findall(
+                r"(?im)^\s*(?:cloud|nube)\s*[:=]\s*(aws|azure)\s*$",
+                issue_text,
+            )
+            if explicit_cloud:
+                data["cloud"] = explicit_cloud[-1].lower()
         explicit_regions = re.findall(
             r"\b(?:af|ap|ca|eu|il|me|mx|sa|us)(?:-gov)?-[a-z]+-\d\b",
             issue_text.lower(),

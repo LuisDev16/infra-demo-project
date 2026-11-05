@@ -1,0 +1,231 @@
+name: Terraform AWS (HCP)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "environments/aws/**"
+      - ".github/workflows/terraform-aws.yml"
+  push:
+    branches: [main]
+    paths:
+      - "environments/aws/**"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue asociado al reintento apply (opcional)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-aws-${{ github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate AWS Terraform configuration
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      - name: Initialize and validate AWS configuration
+        run: |
+          set -euo pipefail
+          directory="environments/aws"
+          terraform -chdir="$directory" init -backend=false -input=false -lockfile=readonly
+          terraform -chdir="$directory" validate -no-color
+
+  plan:
+    name: Plan AWS deployment in HCP Terraform
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_TOKEN_app_terraform_io: ${{ secrets.HCP_TERRAFORM_TOKEN }}
+      TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: Initialize HCP workspace and create saved plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="environments/aws"
+          plan_file="$RUNNER_TEMP/tfplan"
+          plan_output_file="$RUNNER_TEMP/terraform-plan-output.txt"
+          plan_review_file="$RUNNER_TEMP/terraform-plan-review.txt"
+
+          if [[ -z "$TF_TOKEN_app_terraform_io" ]]; then
+            echo "::error::Add the HCP_TERRAFORM_TOKEN Actions secret."
+            exit 1
+          fi
+
+          terraform -chdir="$directory" init -input=false
+          terraform -chdir="$directory" plan -input=false -lock-timeout=5m -out="$plan_file" > "$plan_output_file"
+          terraform -chdir="$directory" show -no-color "$plan_file" > "$plan_review_file"
+
+          {
+            echo "## Terraform plan review — AWS"
+            echo "- HCP workspace: luisdcm/infra-demo-project-aws"
+            echo "- Commit: $GITHUB_SHA"
+            echo ""
+            echo '```terraform'
+            cat "$plan_review_file"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -z "$TF_PLAN_ENCRYPTION_KEY" ]]; then
+            echo "::error::Add the TF_PLAN_ENCRYPTION_KEY Actions secret before creating a plan."
+            exit 1
+          fi
+          printf '%s' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --symmetric --cipher-algo AES256 --output "$RUNNER_TEMP/tfplan.gpg" "$plan_file"
+          rm -f "$plan_file" "$plan_output_file" "$plan_review_file"
+
+      - name: Upload encrypted HCP saved plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}-aws-apply
+          path: ${{ runner.temp }}/tfplan.gpg
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    name: Apply reviewed AWS plan
+    if: |
+      needs.plan.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: plan
+    runs-on: ubuntu-latest
+    environment:
+      name: terraform-apply
+    permissions:
+      contents: read
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      TF_TOKEN_app_terraform_io: ${{ secrets.HCP_TERRAFORM_TOKEN }}
+      TF_PLAN_ENCRYPTION_KEY: ${{ secrets.TF_PLAN_ENCRYPTION_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.4
+          terraform_wrapper: false
+
+      - name: Download encrypted HCP saved plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}-aws-apply
+          path: ${{ runner.temp }}/encrypted-plan
+
+      - name: Apply the exact HCP saved plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="environments/aws"
+          plan_file="$RUNNER_TEMP/tfplan"
+          encrypted_plan="$RUNNER_TEMP/encrypted-plan/tfplan.gpg"
+
+          if [[ -z "$TF_TOKEN_app_terraform_io" ]]; then
+            echo "::error::HCP_TERRAFORM_TOKEN is not available."
+            exit 1
+          fi
+          if [[ -z "$TF_PLAN_ENCRYPTION_KEY" ]]; then
+            echo "::error::TF_PLAN_ENCRYPTION_KEY is not available to the protected environment."
+            exit 1
+          fi
+
+          terraform -chdir="$directory" init -input=false
+          printf '%s' "$TF_PLAN_ENCRYPTION_KEY" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --decrypt --output "$plan_file" "$encrypted_plan"
+          terraform -chdir="$directory" apply -input=false "$plan_file"
+          rm -f "$plan_file"
+
+      - name: Report completion
+        run: echo "AWS infrastructure apply completed through HCP Terraform." >> "$GITHUB_STEP_SUMMARY"
+
+  close_request_issue:
+    name: Close issue after AWS deployment attempt
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [validate, plan, apply]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Resolve issue and close it with the workflow result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER_INPUT: ${{ inputs.issue_number }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          APPLY_RESULT: ${{ needs.apply.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          issue_number="$ISSUE_NUMBER_INPUT"
+          if [[ -n "$issue_number" && ! "$issue_number" =~ ^[0-9]+$ ]]; then
+            echo "::error::issue_number must contain only digits."
+            exit 1
+          fi
+
+          if [[ -z "$issue_number" && "$EVENT_NAME" == "push" ]]; then
+            head_ref="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '[.[] | select(.base.ref == "main" and .merged_at != null and (.head.ref | test("^copilot/issue-[0-9]+$")))] | last | .head.ref // empty')"
+            if [[ "$head_ref" =~ ^copilot/issue-([0-9]+)$ ]]; then
+              issue_number="${BASH_REMATCH[1]}"
+            fi
+          fi
+
+          if [[ -z "$issue_number" ]]; then
+            echo "::warning::No issue number was supplied or found for this AWS deployment."
+            exit 0
+          fi
+
+          result="success"
+          if [[ "$VALIDATE_RESULT" != "success" || "$PLAN_RESULT" != "success" || "$APPLY_RESULT" != "success" ]]; then
+            result="failure"
+          fi
+          body="## Resultado del despliegue AWS: $result
+
+          - Terraform validate: $VALIDATE_RESULT
+          - HCP Terraform plan: $PLAN_RESULT
+          - HCP Terraform apply: $APPLY_RESULT
+
+          Ejecución: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          El intento terminó y el issue se cierra automáticamente. No se ejecuta un rollback automático."
+          gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" --reason completed --comment "$body"

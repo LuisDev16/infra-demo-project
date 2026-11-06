@@ -23,4 +23,16 @@ provider "azurerm" {
   features {}
 }
 
-
+# BEGIN ISSUE COPILOT: 5
+module "network_issue_5" {
+  source                  = "git::https://github.com/LuisDev16/modulos-terraform.git//azure/network?ref=fa2a8482436be6938c90f34846d77181bdc64c7d"
+  name                    = "vnet-dev-01"
+  resource_group_name     = "rg-dev-01"
+  location                = "eastus"
+  address_space           = ["10.20.0.0/16"]
+  subnet_name             = "subnet-dev-01"
+  subnet_address_prefixes = ["10.20.1.0/24"]
+  vm_enabled              = false
+  tags                    = { "Environment" = "dev", "ManagedBy" = "infra-demo-issue-copilot", "RequestIssue" = "5" }
+}
+# END ISSUE COPILOT: 5
